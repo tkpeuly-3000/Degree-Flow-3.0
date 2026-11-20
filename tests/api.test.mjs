@@ -2,6 +2,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
+process.env.DEGREE_FLOW_AI = "on";
 process.env.ANTHROPIC_API_KEY = "test-key";
 process.env.HOURLY_LIMIT = "5";
 const { default: handler } = await import("../netlify/functions/claude.mjs");

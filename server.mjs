@@ -79,5 +79,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Degree Flow is running at http://localhost:${PORT}`);
-  console.log(process.env.ANTHROPIC_API_KEY ? `AI reader: on (${process.env.CLAUDE_MODEL || "claude-sonnet-5-5"})` : "AI reader: off. Add ANTHROPIC_API_KEY to a .env file to turn it on.");
+  console.log(String(process.env.DEGREE_FLOW_AI).toLowerCase() === "on" ? "Optional AI helper: on" : "Optional AI helper: off (the app works fully without it)");
 });

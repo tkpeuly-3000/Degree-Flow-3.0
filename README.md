@@ -1,100 +1,89 @@
 # Degree Flow
 
-**Turn a degree flowchart into a semester plan you can drag around, with every prerequisite checked.**
+**Turn a degree flowchart into a semester plan you can drag around, with every prerequisite checked. Free, private, and no AI service needed.**
 
-Students upload screenshots of their degree flowchart. An AI reader (Claude) pulls out every class, its prerequisites and whether it's done. Degree Flow then builds a semester by semester plan that mixes hard and easy classes, follows the student's own requests, and never lets a class land before what it needs.
+Students upload the flowchart their advisor gave them (PDF, Excel, CSV or screenshots). Degree Flow reads every class, its prerequisites and its color right in the browser, asks the student what the colors mean, and builds a semester by semester plan that mixes hard and easy classes and never puts a class before what it needs.
 
 ![Degree Flow plan board](docs/screenshot.png)
 
 ## Features
 
-**Read the flowchart**
-- Upload the flowchart as a PDF, or up to 6 screenshots or photos (or paste them). PDF pages are turned into compressed images in the browser, so uploads stay small. Describe how to read the chart, for example "yellow is taken, orange is in progress, bold is hard."
-- Claude reads each class: code, name, credit hours, prerequisites, classes allowed in the same semester, status, hard or easy, and fall only or spring only.
-- A second pass rereads the chart and fixes mistakes, and lists what it changed.
-- Anything the AI isn't sure about is flagged in red for the student to check.
-- No AI available? Students can type their classes in instead.
+**Reads flowcharts on its own, for free**
+- **Excel (.xlsx):** reads the cells directly, with their exact text, fill colors, bold and merged cells.
+- **PDF:** uses the text inside the PDF with its position, then finds the colored box behind each piece of text.
+- **Images and scanned PDFs:** free text recognition ([Tesseract](https://github.com/naptha/tesseract.js)) runs in the browser, after a cleanup step that makes dark red text on a red box readable.
+- Its own reading rules then find the classes: a box that starts with a course code (or an elective title) is a class, the rest of the box is its name, and the "PR:" lines under it are its prerequisites. Shorthand like "ME 3303, 3370" and "CHEM 1307/1107", and "may be taken concurrently", are understood.
+- Overlapping screenshots are merged, and anything that looks misread is flagged for the student to check.
 
-**Check the classes**
-- Editable table for every class. Prerequisites that aren't on the list get flagged, and prerequisite loops are caught before planning.
+**The student teaches it the colors**
+- Advisors color charts differently, so the student names one class they finished, one they're taking now and one they still need. The app learns what each color means.
+- Every color found is listed, and the student can set any color by hand, mark a color "ignore," or add their own labels like "Suggested next semester."
+- Naming a hard class that's bold makes every bold class count as hard. No color means "still need."
 
-**Plan automatically**
-- Prerequisites always come first. Long prerequisite chains start early so nothing spills past graduation.
-- Each semester mixes at least one easy class with hard classes spread evenly, up to the student's limit.
-- Works toward the yearly credit target (for example 30 per academic year), with summers used for electives and easy classes.
-- Fall only and spring only classes stay in their season.
-
-**Follow the student's requests first**
-- Plain English requests such as "Material Science in Spring 2027", "don't put Dynamics, Fluids and Thermo II together" or "only 3 classes in my last semester" become rules the planner follows before anything else.
-- Every rule shows as a chip that can be removed.
-
-**Drag and drop**
-- Drag a class to another semester (on phones, hold the grip). Columns turn green where the class is allowed and red where it would break a prerequisite. Bad drops are blocked with the reason.
-- Moved classes are pinned so "Auto suggest again" keeps them. Tap the pin to release one.
-- Tap a class to light up its whole prerequisite chain. Keyboard users move classes with Shift and the arrow keys.
-
-**Track and save**
-- Credit totals per academic year, plus hours, hard class count and easy class check per semester, with warnings.
-- Add a semester, start over, save the plan as a file and open it again. Plans are kept in the browser automatically.
+**Plans automatically, then lets the student take over**
+- Prerequisites always come first. Long prerequisite chains start early, and fall only and spring only classes stay in their season.
+- Each semester mixes an easy class with hard classes spread evenly, up to the student's limit, while aiming for their yearly credit target.
+- Drag classes between semesters: columns turn green where a move is allowed and red where it breaks a prerequisite, and a bad drop is blocked with the reason. Moved classes are pinned so "Auto suggest again" keeps them.
+- A graduation progress bar, credit totals per academic year, and warnings for heavy or light semesters.
+- Plans are saved in the browser automatically, and can be saved to a file and opened again.
 
 ## Run it on your computer
 
-Needs [Node.js](https://nodejs.org) 20 or newer. No packages to install.
+Needs [Node.js](https://nodejs.org) 20 or newer. Nothing to install.
 
 ```bash
 npm start
 ```
 
-Open http://localhost:3000. The planner works right away. To turn on the AI reader, copy `.env.example` to `.env`, add your `ANTHROPIC_API_KEY`, and restart.
+Open http://localhost:3000 and press **Try a sample flowchart**. Run the tests with `npm test`.
 
-Run the tests:
+## Publish it for free
 
-```bash
-npm test
-```
+Degree Flow is a static site: everything runs in the visitor's browser, so hosting costs nothing.
 
-## Publish it
+### GitHub Pages (simplest, $0)
 
-### Netlify (recommended, includes the AI reader)
+1. Push this repository to GitHub.
+2. **Settings → Pages → Source: GitHub Actions.**
+3. **Actions → Deploy demo to GitHub Pages → Run workflow.** Your site appears at `https://<your-username>.github.io/<repo-name>/`.
 
-The AI reader needs an API key, and that key must stay on a server, never inside the web page. The function in `netlify/functions/claude.mjs` does that.
+### Netlify (also free)
 
-1. Create an API key at [console.anthropic.com](https://console.anthropic.com) and set a monthly spend limit.
-2. Push this repository to GitHub.
-3. On [Netlify](https://app.netlify.com) choose **Add new project → Import an existing project → GitHub** and pick the repository. `netlify.toml` already sets everything; leave the build command empty.
-4. In **Project configuration → Environment variables**, add `ANTHROPIC_API_KEY`.
-5. **Deploys → Trigger deploy.** Every later push to GitHub redeploys automatically.
+On [Netlify](https://app.netlify.com) choose **Add new project → Import an existing project → GitHub**, pick the repository, and deploy. `netlify.toml` already sets everything.
 
-Optional variables: `CLAUDE_MODEL` (default `claude-sonnet-5-5`) and `HOURLY_LIMIT` (AI calls per visitor per hour, default 20; reading one chart uses 2).
+### Optional AI helper (off by default)
 
-### GitHub Pages (free demo without the AI reader)
-
-GitHub Pages only hosts static files, so it can't keep a key secret. The planner, typing classes, drag and drop and saving all still work there.
-
-1. **Settings → Pages → Source: GitHub Actions.**
-2. **Actions → Deploy demo to GitHub Pages → Run workflow.**
+There's an optional helper that turns typed requests ("put Material Science in Spring 2027") into plan rules. It is **off** unless you set `DEGREE_FLOW_AI=on` in your host's environment variables, because it can use paid API credits or Netlify credits. Without it, students pin classes by dragging them. See `.env.example`.
 
 ## How it works
 
 ```
 public/
-  index.html        page markup
-  styles.css        design tokens, light and dark themes
-  js/planner.js     the planning engine: terms, prerequisite graph, auto mode, move checks, totals
-  js/prompts.js     the prompts sent to Claude and how its answers become rules
-  js/ai.js          connects to Claude (claude.ai or the /api/claude endpoint)
-  js/app.js         the three steps and the drag and drop board
-netlify/functions/
-  claude.mjs        server endpoint: validates uploads, rate limits, calls Claude, streams the answer
-server.mjs          local server for `npm start`
-tests/              unit tests for the planner and the endpoint (node:test, no dependencies)
+  index.html, styles.css   the page
+  js/app.js                the four steps (upload, colors, classes, plan) and the drag and drop board
+  js/planner.js            the planning engine: semesters, prerequisite graph, auto mode, move checks, totals
+  js/engine/               the reading engine
+    index.js               picks a reader per file and merges pages
+    excel.js               Excel and CSV cells
+    picture.js             PDF text, images and text recognition
+    boxes.js               finds colored boxes, bold text, and cleans images for recognition
+    parse.js               the reading rules: classes, names, prerequisites
+    colors.js              color names, grouping, Excel theme colors
+  vendor/                  bundled libraries (see below), loaded only when needed
+  samples/                 the sample flowchart
+netlify/functions/claude.mjs  the optional AI helper (off by default)
+server.mjs                 local server for `npm start`
+tests/                     planner, reading engine and server tests (node:test, no dependencies)
 ```
 
-**Auto mode** works in two passes. First it works backward from the last semester to find the latest semester each class can take and still leave room for every class after it. Then it fills semesters in order, placing urgent classes first, then one easy class, then hard classes up to an even share, then everything else, while respecting prerequisites, hour caps, season limits, pins and "keep apart" rules.
+**Auto mode** works backward from the last semester to find the latest semester each class can take, then fills semesters in order: urgent classes first, then one easy class, then hard classes up to an even share, then the rest, while respecting prerequisites, hour caps, seasons and pins.
 
-**Accuracy safeguards**: a row by row reading prompt, a second checking pass against the images, flags on uncertain boxes, checks for unknown prerequisites and loops, and a review step before any plan is built.
+## Credits
 
-**Privacy**: plans stay in the student's browser. Images go to Claude only when the student presses "Read my flowchart".
+Bundled, unchanged, with their licenses in `public/vendor`:
+- [pdf.js](https://github.com/mozilla/pdf.js) 4.4.168 by Mozilla, Apache 2.0
+- [ExcelJS](https://github.com/exceljs/exceljs) 4.4.0, MIT
+- [Tesseract.js](https://github.com/naptha/tesseract.js) 5.1.1 and its English model, Apache 2.0
 
 ## License
 

@@ -12,7 +12,7 @@
 
 export const DEFAULT_SETTINGS = Object.freeze({
   season: "Fall", year: new Date().getFullYear(), left: 5, summers: true, summerMax: 6, semMax: 18,
-  yearTarget: 30, earned: 0, maxHard: 2, legend: "", easyTxt: "", extra: 0,
+  yearTarget: 30, earned: 0, maxHard: 2, easyTxt: "", extra: 0, degreeTotal: 0,
 });
 
 export const emptyRules = () => ({ apart: [], termLimits: [] });
@@ -46,6 +46,7 @@ export function cleanCourses(list) {
       offered: off === "fall" || off === "spring" ? off : "any",
       kind: ["core", "elective", "gen"].includes(c.kind) ? c.kind : "core",
       check: String(c.check ?? "").slice(0, 160),
+      tag: String(c.tag ?? "").trim().slice(0, 40),
     });
   }
   return out;
@@ -294,6 +295,20 @@ export function totals(state, place) {
     return { year: k, label: academicYearLabel(k), hours, final, met: hours >= st.yearTarget, short: Math.max(0, st.yearTarget - hours) };
   });
   return { perTerm, years };
+}
+
+/** Graduation progress: hours done, in progress, planned, and the semester the plan finishes. */
+export function progress(state, place) {
+  const terms = makeTerms(state.settings), N = terms.length;
+  const sum = (list) => list.reduce((a, c) => a + c.hours, 0);
+  const done = sum(state.courses.filter((c) => c.status === "done"));
+  const current = sum(state.courses.filter((c) => c.status === "current"));
+  const remaining = state.courses.filter((c) => c.status === "remaining");
+  const planned = sum(remaining.filter((c) => place?.[c.code] != null && place[c.code] < N));
+  const unplaced = sum(remaining) - planned;
+  const total = +state.settings?.degreeTotal || done + current + sum(remaining);
+  const lastIdx = Math.max(0, ...state.courses.filter((c) => c.status !== "done" && place?.[c.code] != null && place[c.code] < N).map((c) => place[c.code]));
+  return { done, current, planned, unplaced, total, finish: unplaced ? null : terms[lastIdx]?.t || null, fromChart: !+state.settings?.degreeTotal };
 }
 
 /** Keep a saved placement valid after the course list or settings change. */

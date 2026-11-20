@@ -1,8 +1,29 @@
-// Degree Flow AI proxy. Keeps your Anthropic API key on the server and streams Claude's answer back.
-// Set ANTHROPIC_API_KEY in Netlify: Site configuration > Environment variables.
-// Optional: CLAUDE_MODEL (default claude-sonnet-5-5), HOURLY_LIMIT (default 20 calls per visitor per hour).
+// OPTIONAL Degree Flow AI helper, OFF by default. The app reads flowcharts without it.
+// It only powers typed plan requests ("put Material Science in Spring 2027"), and only when the
+// site owner sets DEGREE_FLOW_AI=on. Leave it unset and this endpoint never calls any AI or spends anything.
+//
+// Two ways to power it when on:
+// 1. Netlify AI Gateway (free plan): Netlify injects ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL itself and
+//    bills your Netlify credits. Nothing to set up.
+// 2. Your own Anthropic key: set ANTHROPIC_API_KEY in Project configuration > Environment variables.
+// Optional: CLAUDE_MODEL, HOURLY_LIMIT (default 20 calls per visitor per hour).
 
-const MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
+const ANTHROPIC_URL = "https://api.anthropic.com";
+const usingGateway = () => !!process.env.NETLIFY_AI_GATEWAY_KEY && (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === process.env.NETLIFY_AI_GATEWAY_KEY);
+// Haiku costs much less, so free Netlify credits last longer. Override with CLAUDE_MODEL.
+const model = () => process.env.CLAUDE_MODEL || (usingGateway() ? "claude-haiku-5-5" : "claude-sonnet-5-5");
+
+/** Key and address pairs to try, best guess first. A rejected key falls through to the next. */
+function routes() {
+  const env = process.env, out = [];
+  if (String(env.DEGREE_FLOW_AI || "").toLowerCase() !== "on") return []; // off unless the owner turns it on
+  const add = (key, base) => { if (key && base && !out.some((r) => r.key === key && r.base === base)) out.push({ key, base: base.replace(/\/+$/, "") }); };
+  add(env.ANTHROPIC_API_KEY, env.ANTHROPIC_BASE_URL);      // Netlify AI Gateway, or a custom address you set
+  add(env.ANTHROPIC_API_KEY, ANTHROPIC_URL);                // your own Anthropic key
+  add(env.NETLIFY_AI_GATEWAY_KEY, env.ANTHROPIC_BASE_URL);  // gateway key, if yours is set but not valid
+  return out;
+}
+let working = null; // remember the route that worked
 const HOURLY_LIMIT = Number(process.env.HOURLY_LIMIT || 20);
 const MAX_IMAGES = 6;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // base64 length cap per image
@@ -21,10 +42,10 @@ function limited(ip) {
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
 export default async (req, context) => {
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (req.method === "GET") return json({ ok: !!key, model: key ? MODEL : null, maxImages: MAX_IMAGES });
+  const ok = routes().length > 0;
+  if (req.method === "GET") return json({ ok, model: ok ? model() : null, via: ok ? (usingGateway() ? "netlify" : "anthropic") : null, maxImages: MAX_IMAGES });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-  if (!key) return json({ code: "sampling_disabled", error: "The site owner hasn't added an API key yet." }, 503);
+  if (!ok) return json({ code: "sampling_disabled", error: "The AI helper is turned off on this site." }, 503);
 
   const ip = context?.ip || req.headers.get("x-nf-client-connection-ip") || req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "anon";
   if (limited(ip)) return json({ code: "rate_limited", error: "Too many requests. Try again in an hour." }, 429);
@@ -47,16 +68,26 @@ export default async (req, context) => {
     { type: "text", text: prompt },
   ];
 
-  let upstream;
-  try {
-    upstream = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify({ model: MODEL, max_tokens: 16000, temperature: 0, stream: true, system: SYSTEM, messages: [{ role: "user", content }] }),
-    });
-  } catch {
-    return json({ code: "upstream_error", error: "Couldn't reach Claude" }, 502);
+  const payload = JSON.stringify({ model: model(), max_tokens: 16000, temperature: 0, stream: true, system: SYSTEM, messages: [{ role: "user", content }] });
+  const all = routes(), same = (a, b) => a && b && a.key === b.key && a.base === b.base;
+  const remembered = all.find((r) => same(r, working));
+  const tries = remembered ? [remembered, ...all.filter((r) => r !== remembered)] : all;
+  let upstream = null;
+  for (const r of tries) {
+    try {
+      upstream = await fetch(`${r.base}/v1/messages`, {
+        method: "POST",
+        headers: { "x-api-key": r.key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: payload,
+      });
+    } catch {
+      upstream = null;
+      continue;
+    }
+    if (upstream.status !== 401 && upstream.status !== 403) { working = r; break; }
+    console.error(`Key rejected at ${r.base}, trying the next option`);
   }
+  if (!upstream) return json({ code: "upstream_error", error: "Couldn't reach Claude" }, 502);
   if (!upstream.ok) {
     let detail = ""; try { detail = (await upstream.json())?.error?.message || ""; } catch {}
     console.error("Anthropic error", upstream.status, detail);

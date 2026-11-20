@@ -21,12 +21,13 @@
   <header class="top">
     <div>
       <h1>Degree Flow</h1>
-      <p class="tagline">Upload your degree flowchart, tell it how many semesters you have left, and get a plan you can drag around. It never lets a class land before its prerequisites.</p>
+      <p class="tagline">Upload your degree flowchart and get a semester plan you can drag around. It reads PDF, Excel and image files right in your browser, for free, and never lets a class land before its prerequisites.</p>
     </div>
     <nav class="steps" aria-label="Steps">
-      <button type="button" data-step="1"><span class="n">1</span>Flowchart</button>
-      <button type="button" data-step="2"><span class="n">2</span>Classes</button>
-      <button type="button" data-step="3"><span class="n">3</span>Plan</button>
+      <button type="button" data-step="1"><span class="n">1</span>Upload</button>
+      <button type="button" data-step="2"><span class="n">2</span>Colors</button>
+      <button type="button" data-step="3"><span class="n">3</span>Classes</button>
+      <button type="button" data-step="4"><span class="n">4</span>Plan</button>
     </nav>
   </header>
 
@@ -35,26 +36,21 @@
     <button class="btn sm primary" type="button" id="exStart">Start my own</button>
   </div>
 
-  <!-- STEP 1 -->
+  <!-- STEP 1: upload -->
   <section class="panel" id="s1" hidden>
-    <div><h2>Your flowchart</h2><p class="lead">Add your degree flowchart as a PDF, or as screenshots or photos. Claude reads every class box, its prerequisites and whether you have taken it. You check everything on the next step.</p></div>
+    <div><h2>Your flowchart</h2><p class="lead">Add the flowchart your advisor gave you: a PDF, an Excel file, or screenshots and photos. Everything is read on your device; nothing is uploaded anywhere.</p></div>
     <div class="grid2">
       <fieldset>
-        <legend>Flowchart images</legend>
-        <div class="drop" id="drop" tabindex="0" role="button" aria-label="Add flowchart images">
-          <strong>Drop a PDF or images here, or tap to choose</strong>
-          <span id="dropNote">A PDF, or PNG, JPG or WebP screenshots.</span>
+        <legend>Flowchart files</legend>
+        <div class="drop" id="drop" tabindex="0" role="button" aria-label="Add flowchart files">
+          <strong>Drop files here, or tap to choose</strong>
+          <span id="dropNote">PDF, Excel (.xlsx), CSV, or PNG and JPG images. Several screenshots are fine. You can also paste a screenshot.</span>
         </div>
-        <input type="file" id="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif" multiple hidden>
-        <div class="thumbs" id="thumbs"></div>
-        <label class="f" for="legendTxt">How to read your chart <small>Colors, bold, marks. Example: yellow is taken, orange is in progress, bold classes are hard, pink are options.</small>
-          <textarea id="legendTxt" placeholder="yellow = taken, orange = in progress, bold = hardest classes"></textarea>
-        </label>
-        <label class="f" for="easyTxt">Classes you find easy <small>Optional. Example: history, ethics and politics classes I take online.</small>
-          <input type="text" id="easyTxt" placeholder="history, ethics, politics (online)">
-        </label>
-        <label class="f" for="reqTxt1">Anything you want in your plan <small>Optional. The plan always follows these first.</small>
-          <textarea id="reqTxt1" placeholder="Put Material Science in Spring 2027. Don't put Dynamics, Fluids and Thermo II together. Only 3 classes in my last semester."></textarea>
+        <input type="file" id="file" accept=".pdf,application/pdf,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xls,.csv,text/csv,image/png,image/jpeg,image/webp,image/gif,image/bmp" multiple hidden>
+        <div class="files" id="files"></div>
+        <p class="hint">Tip: Excel and PDF files read best. For screenshots, zoom in so the text is sharp.</p>
+        <label class="f" for="easyTxt">Classes you find easy <small>Optional. Words to look for, like: history, politics, ethics, arts.</small>
+          <input type="text" id="easyTxt" placeholder="history, politics, ethics, arts">
         </label>
       </fieldset>
       <fieldset>
@@ -75,26 +71,55 @@
           <label class="f" for="yearTarget">Credits needed per academic year <small>Fall, Spring and the Summer after</small><input type="number" id="yearTarget" min="0" max="60" step="1"></label>
           <label class="f" for="earned">Hours already done this academic year <small>Before the current semester</small><input type="number" id="earned" min="0" max="60" step="1"></label>
         </div>
-        <label class="f" for="maxHard">Max hard classes per semester<input type="number" id="maxHard" min="1" max="6" step="1"></label>
+        <div class="row">
+          <label class="f" for="maxHard">Max hard classes per semester<input type="number" id="maxHard" min="1" max="6" step="1"></label>
+          <label class="f" for="degreeTotal">Hours your degree needs <small>Optional, for the progress bar</small><input type="number" id="degreeTotal" min="0" max="250" step="1" placeholder="e.g. 128"></label>
+        </div>
       </fieldset>
     </div>
-    <label class="chk"><input type="checkbox" id="verify" checked> Double check the reading (takes a little longer, catches more mistakes)</label>
     <div class="actions">
       <button class="btn primary" type="button" id="readBtn">Read my flowchart</button>
-      <button class="btn" type="button" id="stopBtn" hidden>Stop</button>
+      <button class="btn" type="button" id="sampleBtn">Try a sample flowchart</button>
       <button class="btn" type="button" id="manualBtn">Type my classes instead</button>
-      <span class="status" id="readStatus" role="status" aria-live="polite"></span>
     </div>
-    <p class="hint" id="aiNote"></p>
+    <div class="progress" id="readProgress" hidden><div class="pbar"><span id="readFill"></span></div><span class="status" id="readStatus" role="status" aria-live="polite"></span></div>
   </section>
 
-  <!-- STEP 2 -->
+  <!-- STEP 2: colors -->
   <section class="panel" id="s2" hidden>
-    <div><h2>Check your classes</h2><p class="lead">Fix anything Claude read wrong. Prerequisites go in as course codes separated by commas. "Same term OK" is for a prerequisite you are allowed to take at the same time.</p></div>
+    <div><h2>What do the colors mean?</h2><p class="lead" id="colorLead">Every advisor colors flowcharts differently. Name one class for each status and the app learns what each color means.</p></div>
+    <div class="grid2">
+      <fieldset>
+        <legend>Teach by example</legend>
+        <datalist id="codeList"></datalist>
+        <label class="f" for="exDone"><span>A class you've <b>finished</b></span><input type="text" id="exDone" list="codeList" placeholder="e.g. ENGL 1301" autocomplete="off"><span class="learned" id="exDoneOut"></span></label>
+        <label class="f" for="exNow"><span>A class you're <b>taking now</b></span><input type="text" id="exNow" list="codeList" placeholder="e.g. ME 2322" autocomplete="off"><span class="learned" id="exNowOut"></span></label>
+        <label class="f" for="exNeed"><span>A class you <b>still need</b></span><input type="text" id="exNeed" list="codeList" placeholder="e.g. ME 3370" autocomplete="off"><span class="learned" id="exNeedOut"></span></label>
+        <label class="f" for="exHard"><span>A <b>hard</b> class</span> <small>Optional. If it's bold, every bold class counts as hard.</small><input type="text" id="exHard" list="codeList" placeholder="e.g. ME 3370" autocomplete="off"><span class="learned" id="exHardOut"></span></label>
+      </fieldset>
+      <fieldset>
+        <legend>Colors found in your chart</legend>
+        <div class="swatches" id="swatches"></div>
+        <label class="chk"><input type="checkbox" id="boldHard"> Bold classes are hard</label>
+        <div class="addlabel">
+          <label class="f" for="newLabel">Add your own label <small>For extra colors, like "suggested next semester". Classes keep it as a tag.</small>
+            <span class="row"><input type="text" id="newLabel" placeholder="Suggested next semester" maxlength="30"><button class="btn sm" type="button" id="addLabelBtn">Add label</button></span>
+          </label>
+        </div>
+      </fieldset>
+    </div>
+    <div class="actions">
+      <button class="btn primary" type="button" id="colorsDone">Use these colors</button>
+      <span class="status" id="colorStatus" role="status" aria-live="polite"></span>
+    </div>
+  </section>
+
+  <!-- STEP 3: classes -->
+  <section class="panel" id="s3" hidden>
+    <div><h2>Check your classes</h2><p class="lead">Fix anything that was read wrong. Rows marked in red are worth a second look. Prerequisites go in as course codes separated by commas; "Same term OK" is for a prerequisite you can take at the same time.</p></div>
     <div class="counts" id="counts"></div>
-    <details id="changesBox" hidden><summary class="hint" style="cursor:pointer">What the double check fixed</summary><ul class="changes" id="changes"></ul></details>
     <div class="tablewrap"><table class="classes" id="tbl">
-      <thead><tr><th>Code</th><th>Name</th><th>Hrs</th><th>Status</th><th>Needs first</th><th>Same term OK</th><th>Hard</th><th>Easy</th><th>Offered</th><th>Type</th><th></th></tr></thead>
+      <thead><tr><th>Code</th><th>Name</th><th>Hrs</th><th>Status</th><th>Needs first</th><th>Same term OK</th><th>Hard</th><th>Easy</th><th>Offered</th><th>Type</th><th>Label</th><th></th></tr></thead>
       <tbody></tbody>
     </table></div>
     <div class="actions">
@@ -104,13 +129,14 @@
     </div>
   </section>
 
-  <!-- STEP 3 -->
-  <section id="s3" hidden style="display:flex;flex-direction:column;gap:14px">
+  <!-- STEP 4: plan -->
+  <section id="s4" hidden style="display:flex;flex-direction:column;gap:14px">
+    <div class="gradbar" id="gradbar"></div>
     <div class="bar" id="bar"></div>
-    <div class="asks">
+    <div class="asks" id="asks" hidden>
       <div>
         <h3>Tell the planner</h3>
-        <label class="f" for="reqTxt"><span class="hint" style="font-size:12.5px">Say what you want in plain words. Your requests always come first, then auto mode fills the rest, mixing hard and easy classes in each semester.</span>
+        <label class="f" for="reqTxt"><span class="hint" style="font-size:12.5px">Say what you want in plain words. Your requests always come first, then auto mode fills the rest.</span>
           <textarea id="reqTxt" placeholder="Put Material Science in Spring 2027. Don't put Dynamics, Fluids and Thermo II together. Only 3 classes in my last semester."></textarea>
         </label>
         <div class="actions" style="margin-top:8px"><button class="btn primary sm" type="button" id="applyReq">Apply and rebuild</button><span class="status" id="reqStatus" role="status" aria-live="polite"></span></div>
@@ -120,6 +146,7 @@
         <div class="rules" id="rules"></div>
       </div>
     </div>
+    <div class="rulesonly" id="rulesOnly"><span class="hint">Your pinned classes:</span><div class="rules" id="rules2"></div></div>
     <div class="planbar">
       <div class="legendrow" aria-label="Legend">
         <span class="chip"><span class="dot" style="background:var(--now)"></span>Current, locked</span>
@@ -132,16 +159,16 @@
       <div class="tools">
         <button class="btn sm" type="button" id="addSem">Add a semester</button>
         <button class="btn sm" type="button" id="rebuild">Auto suggest again</button>
-        <button class="btn sm" type="button" id="exportBtn" hidden>Save a copy</button>
+        <button class="btn sm" type="button" id="exportBtn">Save a copy</button>
         <button class="btn sm" type="button" id="importBtn">Open a copy</button>
         <input type="file" id="importFile" accept="application/json,.json" hidden>
         <button class="btn sm danger" type="button" id="startOver">Start over</button>
       </div>
     </div>
-    <p class="hint">Drag a class to another semester (on a phone, hold the dotted grip). Green columns are allowed, red ones break a prerequisite. A class you move gets pinned, so rebuilding keeps it there; tap its pin to let auto mode move it again. Tap a class to light up its chain. Keyboard: focus a class, then Shift with the left or right arrow. Your plan is saved in this browser.</p>
+    <p class="hint">Drag a class to another semester (on a phone, hold the dotted grip). Green columns are allowed, red ones break a prerequisite. A class you move gets pinned, so "Auto suggest again" keeps it there; tap its pin to let it move again. Tap a class to light up its chain. Keyboard: focus a class, then Shift with the left or right arrow. Your plan is saved in this browser.</p>
     <div class="scroller" id="scroller"><div class="board" id="board"><svg class="wires" id="wires"></svg></div></div>
   </section>
-  <footer class="foot">Degree Flow · made by Tabassum Peuly · Your plan stays in your browser. Flowchart images are only sent to the AI reader when you press “Read my flowchart”.</footer>
+  <footer class="foot">Degree Flow · made by Tabassum Peuly · Free and private: your flowchart is read on your device and your plan stays in your browser.</footer>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 

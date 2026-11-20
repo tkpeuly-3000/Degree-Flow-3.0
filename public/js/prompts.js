@@ -1,46 +1,6 @@
-// Prompts sent to Claude, and code that turns its answers into planner rules.
+// Optional: typed plan requests ("put Material Science in Spring 2027") turned into planner rules by Claude.
+// Only used when the site owner turns the AI on; the app works fully without it.
 import { norm, makeTerms, buildGraph, emptyRules } from "./planner.js";
-
-const SHAPE = `{"program":"short program name","courses":[{"code":"ME 3370","name":"Fluids","hours":3,"status":"remaining","prereqs":["ME 2322","ME 2301"],"coreqs":[],"hard":false,"easy":false,"offered":"any","kind":"core","check":""}]}`;
-
-const FIELD_RULES = `Field rules:
-- code: as printed, like "ME 3370". For a slot with no number (an elective), invent a short unique code such as "DEPT ELEC 1", "HIST ELEC 1", "CREATIVE ARTS".
-- name: the course title as printed, expanded from abbreviations when obvious.
-- hours: printed credit hours if shown. Otherwise, for 4 digit US course numbers where the second digit is the credit hours (3370 gives 3, 2207 gives 2), use that. Otherwise 3.
-- status: "done", "current" (in progress now) or "remaining", following the student's legend.
-- prereqs: the course codes listed as prerequisites (often "PR:") or shown by arrows into the box, written exactly as those courses' codes appear in your list.
-- coreqs: prerequisites the chart says "may be taken concurrently" with this course. Put those here instead of prereqs.
-- hard: true only when the legend says how hard classes are marked and this box is marked that way.
-- easy: true only when the student's easy list or legend covers this class.
-- offered: "fall" or "spring" only if the chart or the student says the class is only offered then; otherwise "any".
-- kind: "core" for courses in the major, "elective" for elective slots and minor classes, "gen" for general education and required courses outside the major.
-- check: leave "" when sure. When a box is blurry, cut off, or its color or prerequisites are unclear, write a few words saying what to check.`;
-
-export function readPrompt(settings, imageCount) {
-  const s = settings;
-  return `You are reading a university student's degree flowchart from ${imageCount} image(s). The images may overlap; list each course once.
-The student's current semester is ${s.season} ${s.year}.
-${s.legend ? `How the student says to read the chart: ${s.legend}` : `The student gave no legend. Infer status from marks such as grades, checkmarks or highlight colors if the chart has a key; if unsure, use "remaining".`}
-${s.easyTxt ? `Classes the student considers easy: ${s.easyTxt}` : ""}
-
-List EVERY course box on the chart, including elective slots and placeholders.
-Reply with only JSON in exactly this shape:
-${SHAPE}
-${FIELD_RULES}
-Work carefully: go row by row, left to right, and read every "PR:" line in full. Do not invent courses that are not on the chart.`;
-}
-
-export function checkPrompt(settings, list) {
-  const slim = list.map(({ code, name, hours, status, prereqs, coreqs, hard, easy, offered, kind, check }) =>
-    ({ code, name, hours, status, prereqs, coreqs, hard, easy, offered, kind, check }));
-  return `You are checking a list of courses that was read from the attached degree flowchart image(s). Compare it against the images box by box.
-Fix: missing course boxes, courses that are not on the chart, wrong codes or names, wrong credit hours, wrong or missing prerequisites (reread every "PR:" line), wrong status by color using this legend: ${settings.legend || "none given"}.
-${FIELD_RULES}
-Reply with only the corrected JSON: {"courses":[...same shape...],"changes":["short note for each fix"]}. If nothing needs fixing, return the list unchanged with "changes": [].
-
-The list to check:
-${JSON.stringify({ courses: slim })}`;
-}
 
 export function requestsPrompt(state, text) {
   const T = makeTerms(state.settings);

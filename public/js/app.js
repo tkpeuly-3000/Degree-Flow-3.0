@@ -1,16 +1,20 @@
-// Degree Flow page: the three steps (flowchart, classes, plan) and the drag and drop board.
+// Degree Flow page: upload, colors, classes, plan, and the drag and drop board.
 import {
   DEFAULT_SETTINGS, EXAMPLE_COURSES, EXAMPLE_SETTINGS, emptyRules, norm, cleanCourses, makeTerms,
-  buildGraph, findLoop, schedule, moveProblem, pinIssues, totals, reconcile,
+  buildGraph, findLoop, schedule, moveProblem, pinIssues, totals, reconcile, progress,
 } from "./planner.js";
-import { readPrompt, checkPrompt, requestsPrompt, applyRequests } from "./prompts.js";
+import { requestsPrompt, applyRequests } from "./prompts.js";
 import { connectAI, AI_ERRORS } from "./ai.js";
-import { isPdf, pdfToImages } from "./pdf.js";
+import { readFlowchart, isSupported, isOldExcel } from "./engine/index.js";
+import { colorName } from "./engine/colors.js";
 
 /* ---------- state ---------- */
-const KEY = "degree-flow-v2";
-const fresh = () => ({ settings: { ...DEFAULT_SETTINGS }, courses: [], place: null, pins: {}, pinSrc: {}, rules: emptyRules(), requests: "", reqDone: "", example: false, step: 1, lastChanges: [] });
-const example = () => ({ ...fresh(), settings: { ...EXAMPLE_SETTINGS }, courses: structuredClone(EXAMPLE_COURSES), example: true, step: 3 });
+const KEY = "degree-flow-v3";
+const fresh = () => ({
+  settings: { ...DEFAULT_SETTINGS }, courses: [], place: null, pins: {}, pinSrc: {}, rules: emptyRules(), requests: "", reqDone: "",
+  example: false, step: 1, reading: null, colorMap: {}, labels: [], boldHard: false, examples: {},
+});
+const example = () => ({ ...fresh(), settings: { ...EXAMPLE_SETTINGS }, courses: structuredClone(EXAMPLE_COURSES), example: true, step: 4 });
 
 function load() {
   try {
@@ -29,7 +33,7 @@ let S = load() || example();
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch {} }
 
 let AI = null;
-let images = [];
+let files = [];
 
 /* ---------- helpers ---------- */
 const $ = (id) => document.getElementById(id);
@@ -41,9 +45,8 @@ function toast(msg, bad) {
   t.className = "toast" + (bad ? " bad" : "");
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 4000);
+  toastTimer = setTimeout(() => (t.hidden = true), 4200);
 }
-/** Friendly message plus the technical detail, so problems can be diagnosed from a screenshot. */
 function errorText(e) {
   const base = AI_ERRORS[e?.code];
   if (!base) return "";
@@ -60,34 +63,38 @@ function setStatus(id, msg, err, busy) {
 
 /* ---------- steps ---------- */
 function go(step) {
-  if (step === 3) S.place = reconcile(S, S.place);
+  if (step === 2 && !S.reading) step = S.courses.length ? 3 : 1;
+  if (step === 4) S.place = reconcile(S, S.place);
   S.step = step;
   save();
-  [1, 2, 3].forEach((n) => { $("s" + n).hidden = n !== step; });
+  [1, 2, 3, 4].forEach((n) => { $("s" + n).hidden = n !== step; });
   document.querySelectorAll("nav.steps button").forEach((b) => {
-    if (+b.dataset.step === step) b.setAttribute("aria-current", "step"); else b.removeAttribute("aria-current");
-    if (+b.dataset.step > 1) b.disabled = !S.courses.length;
+    const n = +b.dataset.step;
+    if (n === step) b.setAttribute("aria-current", "step"); else b.removeAttribute("aria-current");
+    b.disabled = n === 2 ? !S.reading : n > 2 ? !S.courses.length : false;
   });
   $("exBanner").hidden = !S.example;
   if (step === 1) fillSetup();
-  if (step === 2) renderTable();
-  if (step === 3) renderPlan();
+  if (step === 2) renderColors();
+  if (step === 3) renderTable();
+  if (step === 4) renderPlan();
   window.scrollTo({ top: 0 });
 }
 document.querySelectorAll("nav.steps button").forEach((b) => {
-  b.onclick = () => { if (S.step === 2) commitTable(); if (S.step === 1) readSetup(); go(+b.dataset.step); };
+  b.onclick = () => { if (S.step === 3) commitTable(); if (S.step === 1) readSetup(); go(+b.dataset.step); };
 });
-function startOver() { S = fresh(); save(); images = []; renderThumbs(); setStatus("readStatus", ""); go(1); }
+function startOver() { S = fresh(); save(); files = []; renderFiles(); $("readProgress").hidden = true; go(1); }
 $("exStart").onclick = startOver;
 $("startOver").onclick = () => { if (confirm("Clear your classes and plan and start over?")) startOver(); };
 
-/* ---------- step 1: flowchart and settings ---------- */
-const FIELDS = ["curSeason", "curYear", "left", "summers", "summerMax", "semMax", "yearTarget", "earned", "maxHard", "legendTxt", "easyTxt"];
+/* ---------- step 1: upload and settings ---------- */
+const FIELDS = ["curSeason", "curYear", "left", "summers", "summerMax", "semMax", "yearTarget", "earned", "maxHard", "easyTxt", "degreeTotal"];
 function fillSetup() {
   const s = S.settings;
   $("curSeason").value = s.season; $("curYear").value = s.year; $("left").value = s.left; $("summers").checked = !!s.summers;
   $("summerMax").value = s.summerMax; $("semMax").value = s.semMax; $("yearTarget").value = s.yearTarget; $("earned").value = s.earned;
-  $("maxHard").value = s.maxHard; $("legendTxt").value = s.legend; $("easyTxt").value = s.easyTxt; $("reqTxt1").value = S.requests || "";
+  $("maxHard").value = s.maxHard; $("easyTxt").value = s.easyTxt; $("degreeTotal").value = s.degreeTotal || "";
+  renderFiles();
 }
 function readSetup() {
   const n = (id, d, lo, hi) => { const v = parseInt($(id).value, 10); return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d; };
@@ -101,52 +108,38 @@ function readSetup() {
   s.yearTarget = n("yearTarget", 30, 0, 60);
   s.earned = n("earned", 0, 0, 60);
   s.maxHard = n("maxHard", 2, 1, 6);
-  s.legend = $("legendTxt").value.trim();
   s.easyTxt = $("easyTxt").value.trim();
+  s.degreeTotal = n("degreeTotal", 0, 0, 250);
 }
 FIELDS.forEach((id) => $(id).addEventListener("change", () => {
   const was = JSON.stringify(S.settings);
   readSetup();
   if (was !== JSON.stringify(S.settings)) { S.place = null; save(); }
 }));
-$("reqTxt1").addEventListener("input", (e) => { S.requests = e.target.value; save(); });
 
-function renderThumbs() {
-  const box = $("thumbs");
+const typeOf = (f) => (/\.xlsx$/i.test(f.name) ? "Excel" : /\.xls$/i.test(f.name) ? "Old Excel" : /\.csv$/i.test(f.name) ? "CSV" : /\.pdf$/i.test(f.name) || f.type === "application/pdf" ? "PDF" : "Image");
+function renderFiles() {
+  const box = $("files");
   box.innerHTML = "";
-  images.forEach((f, i) => {
-    const d = document.createElement("div"); d.className = "thumb";
-    const img = document.createElement("img"); img.alt = f.name || `Flowchart image ${i + 1}`; img.src = URL.createObjectURL(f); img.title = f.name || "";
-    const b = document.createElement("button"); b.type = "button"; b.textContent = "Remove";
-    b.onclick = () => { images.splice(i, 1); renderThumbs(); };
-    d.append(img, b); box.append(d);
+  files.forEach((f, i) => {
+    const d = document.createElement("div");
+    d.className = "file";
+    d.innerHTML = `<span class="ftype">${typeOf(f)}</span><span class="fname" title="${esc(f.name)}">${esc(f.name)}</span>`;
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = "Remove"; b.setAttribute("aria-label", `Remove ${f.name}`);
+    b.onclick = () => { files.splice(i, 1); renderFiles(); };
+    d.append(b); box.append(d);
   });
 }
-async function addFiles(list) {
-  const max = AI?.maxImages || 6;
+function addFiles(list) {
   for (const f of [...list]) {
-    if (images.length >= max) { toast(`Up to ${max} images or PDF pages at a time.`, true); break; }
-    if (isPdf(f)) {
-      if (f.size > 30 * 1024 * 1024) { toast(`${f.name} is over 30 MB.`, true); continue; }
-      setStatus("readStatus", `Opening ${f.name}.`, false, true);
-      try {
-        const room = max - images.length;
-        const { pages, total } = await pdfToImages(f, room);
-        images.push(...pages);
-        setStatus("readStatus", total > pages.length
-          ? `Added ${pages.length} of ${total} pages from ${f.name}. Only ${max} pages fit at once, so remove extra pages or split the PDF.`
-          : `Added ${pages.length} page${pages.length > 1 ? "s" : ""} from ${f.name}.`, total > pages.length);
-      } catch {
-        setStatus("readStatus", `Couldn't open ${f.name}. If it has a password, remove it, or take screenshots instead.`, true);
-      }
-      renderThumbs();
-      continue;
-    }
-    if (!/^image\/(png|jpe?g|webp|gif)$/.test(f.type)) { toast(`${f.name} isn't a PDF or a PNG, JPG or WebP image.`, true); continue; }
-    if (f.size > 15 * 1024 * 1024) { toast(`${f.name} is over 15 MB.`, true); continue; }
-    images.push(f);
+    if (isOldExcel(f) && !/\.xlsx$/i.test(f.name)) { toast(`${f.name} is an old .xls file. Save it as .xlsx in Excel or Google Sheets first.`, true); continue; }
+    if (!isSupported(f)) { toast(`${f.name} isn't a PDF, Excel, CSV or image file.`, true); continue; }
+    if (f.size > 40 * 1024 * 1024) { toast(`${f.name} is over 40 MB.`, true); continue; }
+    if (files.length >= 8) { toast("Up to 8 files at a time.", true); break; }
+    files.push(f);
   }
-  renderThumbs();
+  renderFiles();
 }
 $("drop").onclick = () => $("file").click();
 $("drop").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } };
@@ -156,55 +149,181 @@ $("file").onchange = (e) => { addFiles(e.target.files); e.target.value = ""; };
 $("drop").addEventListener("drop", (e) => addFiles(e.dataTransfer.files));
 document.addEventListener("paste", (e) => {
   if (S.step !== 1) return;
-  const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/") || isPdf(f));
-  if (files.length) addFiles(files);
+  const list = [...(e.clipboardData?.files || [])];
+  if (list.length) addFiles(list.map((f, i) => (f.name && f.name !== "image.png" ? f : new File([f], `pasted-${Date.now()}-${i}.png`, { type: f.type }))));
 });
 
-let readCtl = null;
-$("readBtn").onclick = async () => {
+let reading = false;
+async function runReader(list) {
+  if (reading) return;
   readSetup(); save();
-  if (!images.length) return setStatus("readStatus", "Add at least one flowchart image first.", true);
-  if (!AI) return setStatus("readStatus", "The AI reader isn't available here. Use “Type my classes instead”.", true);
-  readCtl = new AbortController();
-  $("readBtn").disabled = true; $("stopBtn").hidden = false;
-  setStatus("readStatus", "Reading your flowchart. This can take a minute.", false, true);
+  if (!list.length) { $("readProgress").hidden = false; setStatus("readStatus", "Add your flowchart file first.", true); return; }
+  reading = true;
+  $("readBtn").disabled = $("sampleBtn").disabled = true;
+  $("readProgress").hidden = false;
+  $("readFill").style.width = "2%";
   try {
-    const out = await AI.json(readPrompt(S.settings, images.length), { images, signal: readCtl.signal, purpose: "read" });
-    let list = cleanCourses(out?.courses);
-    if (!list.length) throw { code: "invalid_json" };
-    S.lastChanges = [];
-    if ($("verify").checked) {
-      setStatus("readStatus", `Found ${list.length} classes. Double checking them against your chart.`, false, true);
-      try {
-        const fix = await AI.json(checkPrompt(S.settings, list), { images, signal: readCtl.signal, purpose: "check" });
-        const fixed = cleanCourses(fix?.courses);
-        if (fixed.length >= Math.ceil(list.length * 0.6)) { list = fixed; S.lastChanges = (fix.changes || []).slice(0, 30).map(String); }
-      } catch (e) { if (e?.code === "cancelled") throw e; }
-    }
-    Object.assign(S, { courses: list, place: null, example: false, pins: {}, pinSrc: {}, rules: emptyRules(), reqDone: "" });
+    const out = await readFlowchart(list, (msg, frac) => {
+      setStatus("readStatus", msg, false, frac < 1);
+      $("readFill").style.width = `${Math.round(Math.max(0.02, frac) * 100)}%`;
+    });
+    if (!out.courses.length) { setStatus("readStatus", out.notes.join(" ") || "No classes were found.", true); return; }
+    S.reading = {
+      courses: out.courses.map(({ code, name, hours, prereqs, coreqs, offered, kind, color, bold, check }) => ({ code, name, hours, prereqs, coreqs, offered, kind, color, bold, check })),
+      palette: out.palette.map(({ hex, name, courses }) => ({ hex, name, count: courses.length })),
+    };
+    Object.assign(S, { example: false, colorMap: {}, examples: {}, labels: [], boldHard: false, place: null, pins: {}, pinSrc: {}, rules: emptyRules(), reqDone: "" });
+    applyColors();
     save();
-    setStatus("readStatus", `Found ${list.length} classes.`);
+    setStatus("readStatus", `Found ${out.courses.length} classes.${out.notes.length ? " " + out.notes.join(" ") : ""}`);
+    $("readFill").style.width = "100%";
     go(2);
   } catch (e) {
-    if (e?.code === "cancelled") setStatus("readStatus", "Stopped.");
-    else setStatus("readStatus", errorText(e) || "Something went wrong reading the images. Try again.", true);
+    console.error(e);
+    setStatus("readStatus", "Something went wrong reading that file. Try another format (Excel or PDF read best), or type your classes.", true);
   } finally {
-    $("readBtn").disabled = false; $("stopBtn").hidden = true;
+    reading = false;
+    $("readBtn").disabled = $("sampleBtn").disabled = false;
   }
+}
+$("readBtn").onclick = () => runReader(files);
+$("sampleBtn").onclick = async () => {
+  try {
+    const r = await fetch("samples/sample-flowchart.xlsx");
+    if (!r.ok) throw 0;
+    const f = new File([await r.blob()], "sample-flowchart.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    files = [f]; renderFiles();
+    runReader(files);
+  } catch { toast("Couldn't load the sample file.", true); }
 };
-$("stopBtn").onclick = () => readCtl?.abort();
 $("manualBtn").onclick = () => {
   readSetup();
   if (S.example) Object.assign(S, { courses: [], place: null, example: false, pins: {}, pinSrc: {}, rules: emptyRules() });
+  S.reading = null;
   if (!S.courses.length) S.courses = cleanCourses([{ code: "NEW 1000", name: "First class", hours: 3, status: "remaining" }]);
-  save(); go(2);
+  save(); go(3);
 };
 
-/* ---------- step 2: check classes ---------- */
+/* ---------- step 2: what the colors mean ---------- */
+const STATUS_TEXT = { done: "Completed", current: "Taking now", remaining: "Still need", ignore: "Not a class (ignore)" };
+const keyOf = (c) => c.color || "none";
+const findCourse = (txt) => {
+  const q = norm(txt);
+  if (!q || !S.reading) return null;
+  const list = S.reading.courses;
+  return list.find((c) => c.code === q) || list.find((c) => c.code.replace(/\s/g, "") === q.replace(/\s/g, "")) ||
+    list.find((c) => c.code.startsWith(q)) || list.find((c) => c.name.toUpperCase().includes(q));
+};
+const meaningOf = (key) => S.colorMap[key] || "remaining";
+function swatch(key) {
+  return key === "none" ? '<span class="sw" style="background:repeating-linear-gradient(45deg,#fff,#fff 3px,#ccc 3px,#ccc 6px)"></span>' : `<span class="sw" style="background:${key}"></span>`;
+}
+const colorLabel = (key) => (key === "none" ? "no color" : colorName(key));
+
+function teach(which) {
+  const map = { exDone: "done", exNow: "current", exNeed: "remaining" };
+  const input = $(which), out = $(which + "Out"), txt = input.value.trim();
+  S.examples[which] = txt;
+  out.className = "learned"; out.innerHTML = "";
+  if (!txt) { save(); return; }
+  const c = findCourse(txt);
+  if (!c) { out.className = "learned bad"; out.textContent = `Couldn't find ${txt} on your chart. Pick one from the list.`; save(); return; }
+  if (which === "exHard") {
+    if (c.bold) { S.boldHard = true; $("boldHard").checked = true; out.className = "learned ok"; out.innerHTML = `${esc(c.code)} is <b>bold</b>, so bold classes count as hard.`; }
+    else { out.className = "learned"; out.textContent = `${c.code} isn't bold. You can mark hard classes on the next step.`; }
+  } else {
+    const key = keyOf(c);
+    S.colorMap[key] = map[which];
+    out.className = "learned ok";
+    out.innerHTML = `${swatch(key)} ${esc(c.code)} is ${esc(colorLabel(key))}, so <b>${esc(colorLabel(key))}</b> means <b>${STATUS_TEXT[map[which]]}</b>.`;
+  }
+  applyColors(); save(); renderSwatches(); checkConflicts();
+}
+["exDone", "exNow", "exNeed", "exHard"].forEach((id) => {
+  $(id).addEventListener("change", () => teach(id));
+  $(id).addEventListener("input", () => { if (findCourse($(id).value)?.code === norm($(id).value)) teach(id); });
+});
+function checkConflicts() {
+  const keys = ["exDone", "exNow", "exNeed"].map((id) => findCourse(S.examples[id] || "")).filter(Boolean).map(keyOf);
+  const dup = keys.find((k, i) => keys.indexOf(k) !== i);
+  if (dup) setStatus("colorStatus", `Two of your examples have the same color (${colorLabel(dup)}). Check them, or set the colors in the list.`, true);
+  else setStatus("colorStatus", "");
+}
+function renderColors() {
+  const R = S.reading;
+  $("codeList").innerHTML = R.courses.map((c) => `<option value="${esc(c.code)}">${esc(c.name)}</option>`).join("");
+  const nColors = R.palette.length + (R.courses.some((c) => !c.color) ? 1 : 0);
+  $("colorLead").textContent = `Found ${R.courses.length} classes in ${nColors} color${nColors === 1 ? "" : "s"}. Every advisor colors flowcharts differently, so name one class for each status and the app learns what each color means. You can also set any color yourself.`;
+  ["exDone", "exNow", "exNeed", "exHard"].forEach((id) => { $(id).value = S.examples[id] || ""; if (S.examples[id]) teach(id); else $(id + "Out").textContent = ""; });
+  $("boldHard").checked = !!S.boldHard;
+  renderSwatches(); checkConflicts();
+}
+function renderSwatches() {
+  const R = S.reading, box = $("swatches");
+  const groups = R.palette.map((p) => p.hex);
+  if (R.courses.some((c) => !c.color)) groups.push("none");
+  const opts = [["done", STATUS_TEXT.done], ["current", STATUS_TEXT.current], ["remaining", STATUS_TEXT.remaining],
+    ...S.labels.map((l) => [`label:${l}`, `Still need, tagged "${l}"`]), ["ignore", STATUS_TEXT.ignore]];
+  box.innerHTML = "";
+  groups.forEach((key) => {
+    const cs = R.courses.filter((c) => keyOf(c) === key);
+    const row = document.createElement("div");
+    row.className = "swrow";
+    const id = `sw-${key.replace("#", "")}`;
+    row.innerHTML = `<span class="big${key === "none" ? " none" : ""}" style="${key === "none" ? "" : `background:${key}`}"></span>
+      <span class="what"><b>${esc(colorLabel(key)[0].toUpperCase() + colorLabel(key).slice(1))} · ${cs.length} class${cs.length === 1 ? "" : "es"}</b><small>${esc(cs.slice(0, 6).map((c) => c.code).join(", "))}${cs.length > 6 ? "…" : ""}</small></span>
+      <select id="${id}" aria-label="What ${esc(colorLabel(key))} means">${opts.map(([v, t]) => `<option value="${esc(v)}"${meaningOf(key) === v ? " selected" : ""}>${esc(t)}</option>`).join("")}</select>`;
+    row.querySelector("select").onchange = (e) => { S.colorMap[key] = e.target.value; applyColors(); save(); };
+    box.append(row);
+  });
+}
+$("boldHard").onchange = (e) => { S.boldHard = e.target.checked; applyColors(); save(); };
+$("addLabelBtn").onclick = () => {
+  const l = $("newLabel").value.trim().replace(/\s+/g, " ").slice(0, 30);
+  if (!l) return;
+  if (!S.labels.includes(l)) S.labels.push(l);
+  $("newLabel").value = "";
+  renderSwatches(); save(); toast(`Added "${l}". Pick it for a color in the list.`);
+};
+$("newLabel").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("addLabelBtn").click(); } });
+
+const EASY_WORDS = {
+  history: ["HIST"], politics: ["POLS", "GOVT", "POLITICS"], political: ["POLS"], government: ["POLS", "GOVT"], ethics: ["ETHICS"],
+  art: ["ART", "ARTS", "CREATIVE"], arts: ["ART", "ARTS", "CREATIVE"], creative: ["CREATIVE"], speech: ["SPCH", "COMM", "SPEECH"],
+  english: ["ENGL"], writing: ["ENGL"], economics: ["ECON"], music: ["MUS", "MUSIC"], psychology: ["PSY", "PSYC"], sociology: ["SOC"],
+  philosophy: ["PHIL"], communication: ["COMM", "SPCH"], online: [],
+};
+function isEasy(c) {
+  const words = String(S.settings.easyTxt || "").toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 3);
+  if (!words.length) return false;
+  const hay = `${c.code} ${c.name}`.toUpperCase();
+  return words.some((w) => (EASY_WORDS[w] || [w.toUpperCase()]).some((k) => k && new RegExp(`\\b${k}`).test(hay)));
+}
+/** Turn the reading plus the color meanings into the class list. */
+function applyColors() {
+  const R = S.reading;
+  if (!R) return;
+  const out = [];
+  for (const c of R.courses) {
+    const m = meaningOf(keyOf(c));
+    if (m === "ignore") continue;
+    const label = m.startsWith("label:") ? m.slice(6) : "";
+    out.push({ ...c, status: label ? "remaining" : m, hard: S.boldHard ? !!c.bold : false, tag: label, easy: isEasy(c) });
+  }
+  S.courses = cleanCourses(out);
+  S.place = null;
+}
+$("colorsDone").onclick = () => {
+  if (!["exDone", "exNow", "exNeed"].some((id) => S.examples[id]) && !Object.keys(S.colorMap).length)
+    return setStatus("colorStatus", "Name at least one class above, or set the colors in the list, so the app knows what's done.", true);
+  applyColors(); save(); go(3);
+};
+
+/* ---------- step 3: check classes ---------- */
 function rowHTML(c, i) {
   const sel = (name, label, opts, v) => `<select data-f="${name}" aria-label="${label}">${opts.map(([val, lab]) => `<option value="${val}"${val === v ? " selected" : ""}>${lab}</option>`).join("")}</select>`;
   return `<tr class="${c.status === "done" ? "done" : ""}" data-i="${i}">
-   <td><input type="text" data-f="code" value="${esc(c.code)}" aria-label="Code" style="width:110px"${c.check ? ` class="warn" title="Check: ${esc(c.check)}"` : ""}>${c.check ? `<div class="checknote">Check: ${esc(c.check)}</div>` : ""}</td>
+   <td><input type="text" data-f="code" value="${esc(c.code)}" aria-label="Code" style="width:120px"${c.check ? ` class="warn" title="Check: ${esc(c.check)}"` : ""}>${c.check ? `<div class="checknote">Check: ${esc(c.check)}</div>` : ""}</td>
    <td><input type="text" data-f="name" value="${esc(c.name)}" aria-label="Name" style="min-width:180px"></td>
    <td><input type="number" data-f="hours" value="${c.hours}" min="0" max="12" aria-label="Hours" style="width:58px"></td>
    <td>${sel("status", "Status", [["done", "Done"], ["current", "Taking now"], ["remaining", "Still need"]], c.status)}</td>
@@ -214,20 +333,18 @@ function rowHTML(c, i) {
    <td class="c"><input type="checkbox" data-f="easy"${c.easy ? " checked" : ""} aria-label="Easy"></td>
    <td>${sel("offered", "Offered", [["any", "Any term"], ["fall", "Fall only"], ["spring", "Spring only"]], c.offered)}</td>
    <td>${sel("kind", "Type", [["core", "Major"], ["elective", "Elective"], ["gen", "Other"]], c.kind)}</td>
+   <td><input type="text" data-f="tag" value="${esc(c.tag || "")}" aria-label="Label" style="width:120px"></td>
    <td><button class="btn sm danger" type="button" data-del="${i}" aria-label="Delete ${esc(c.code)}">Delete</button></td></tr>`;
 }
 function renderTable() {
   $("tbl").tBodies[0].innerHTML = S.courses.map(rowHTML).join("");
   markUnknown(); renderCounts();
-  const ch = S.lastChanges || [];
-  $("changesBox").hidden = !ch.length;
-  $("changes").innerHTML = ch.map((x) => `<li>${esc(x)}</li>`).join("");
 }
 function renderCounts() {
   const by = (st) => S.courses.filter((c) => c.status === st), hrs = (a) => a.reduce((s, c) => s + c.hours, 0);
   const nCheck = S.courses.filter((c) => c.check).length;
   $("counts").innerHTML = (nCheck ? `<span class="chip warnchip">${nCheck} to check</span>` : "") +
-    `<span class="chip">${S.courses.length} classes</span><span class="chip">${by("done").length} done</span><span class="chip">${by("current").length} taking now</span><span class="chip">${by("remaining").length} still needed · ${hrs(by("remaining"))} hrs</span>`;
+    `<span class="chip">${S.courses.length} classes</span><span class="chip">${by("done").length} done · ${hrs(by("done"))} hrs</span><span class="chip">${by("current").length} taking now</span><span class="chip">${by("remaining").length} still needed · ${hrs(by("remaining"))} hrs</span>`;
 }
 function markUnknown() {
   const codes = new Set([...$("tbl").querySelectorAll('input[data-f="code"]')].map((i) => norm(i.value)));
@@ -238,7 +355,7 @@ function markUnknown() {
   });
 }
 function commitTable() {
-  if (S.step !== 2) return;
+  if (S.step !== 3) return;
   const rows = [...$("tbl").tBodies[0].rows];
   const list = rows.map((r) => {
     const g = (f) => r.querySelector(`[data-f="${f}"]`);
@@ -247,7 +364,7 @@ function commitTable() {
       code: g("code").value, name: g("name").value, hours: parseFloat(g("hours").value), status: g("status").value,
       prereqs: g("prereqs").value.split(","), coreqs: g("coreqs").value.split(","),
       check: norm(g("code").value) === old.code ? old.check : "",
-      hard: g("hard").checked, easy: g("easy").checked, offered: g("offered").value, kind: g("kind").value,
+      hard: g("hard").checked, easy: g("easy").checked, offered: g("offered").value, kind: g("kind").value, tag: g("tag").value,
     };
   });
   const next = cleanCourses(list);
@@ -275,23 +392,19 @@ $("addRow").onclick = () => {
   const inp = $("tbl").tBodies[0].lastElementChild.querySelector("input");
   inp.focus(); inp.select();
 };
-$("buildBtn").onclick = async () => {
+$("buildBtn").onclick = () => {
   commitTable();
   const loop = findLoop(S.courses);
   if (loop) return setStatus("buildStatus", `${loop[0]} and ${loop[1]} need each other first. Fix one of them.`, true);
   if (!S.courses.some((c) => c.status !== "done")) return setStatus("buildStatus", "Every class is marked done, so there's nothing to plan.", true);
-  const b = $("buildBtn");
-  b.disabled = true;
-  const ok = await runRequests("buildStatus");
-  b.disabled = false;
-  if (!ok) return;
   S.place = schedule(S); save();
-  go(3);
+  setStatus("buildStatus", "");
+  go(4);
   const iss = pinIssues(S, S.place);
   if (iss.length) toast(iss.join(". ") + ".", true);
 };
 
-/* ---------- typed requests ---------- */
+/* ---------- typed requests (only when the site owner turned AI on) ---------- */
 async function runRequests(statusId) {
   const text = (S.requests || "").trim();
   if (!text) {
@@ -300,7 +413,7 @@ async function runRequests(statusId) {
     return true;
   }
   if (text === S.reqDone) return true;
-  if (!AI) { setStatus(statusId, "Typed requests need the AI reader, which isn't available here. Drag classes to pin them instead.", true); return false; }
+  if (!AI) { setStatus(statusId, "Typed requests aren't available here. Drag classes to pin them instead.", true); return false; }
   setStatus(statusId, "Reading your requests.", false, true);
   try {
     const r = await AI.json(requestsPrompt(S, text), { purpose: "requests" });
@@ -326,26 +439,30 @@ $("applyReq").onclick = async () => {
   if (iss.length) toast(iss.join(". ") + ". Look in the last column.", true);
 };
 function renderRules() {
-  const box = $("rules"), items = [];
+  const items = [];
   Object.entries(S.pins).forEach(([k, t]) => {
-    if (G.by[k]) items.push([`<b>${esc(k)}</b> in ${esc(t)}${S.pinSrc[k] === "ask" ? " (asked)" : " (moved)"}`, () => { delete S.pins[k]; delete S.pinSrc[k]; }]);
+    if (G.by[k]) items.push([`<b>${esc(k)}</b> in ${esc(t)}${S.pinSrc[k] === "ask" ? " (asked)" : ""}`, () => { delete S.pins[k]; delete S.pinSrc[k]; }]);
   });
   (S.rules.apart || []).forEach((g, i) => items.push([`${g.max === 1 ? "Never together" : `At most ${g.max} together`}: <b>${esc(g.codes.join(", "))}</b>`, () => S.rules.apart.splice(i, 1)]));
   (S.rules.termLimits || []).forEach((x, i) => items.push([`<b>${esc(x.term)}</b>: ${[x.maxClasses != null ? `${x.maxClasses} classes max` : "", x.maxHours != null ? `${x.maxHours} hrs max` : ""].filter(Boolean).join(", ")}`, () => S.rules.termLimits.splice(i, 1)]));
-  items.push([`Up to <b>${S.settings.maxHard}</b> hard and at least one easy class per semester when possible`, null]);
-  box.innerHTML = "";
-  items.forEach(([html, rm]) => {
-    const c = document.createElement("span"); c.className = "rchip"; c.innerHTML = html;
-    if (rm) {
-      const b = document.createElement("button"); b.type = "button"; b.textContent = "×"; b.setAttribute("aria-label", "Remove this rule");
-      b.onclick = () => { rm(); S.reqDone = S.requests; S.place = schedule(S); save(); renderPlan(); toast("Removed. Plan rebuilt."); };
-      c.append(b);
-    } else c.style.paddingRight = "10px";
-    box.append(c);
-  });
+  for (const id of ["rules", "rules2"]) {
+    const box = $(id);
+    box.innerHTML = "";
+    const list = id === "rules" ? [...items, [`Up to <b>${S.settings.maxHard}</b> hard and at least one easy class per semester when possible`, null]] : items;
+    if (!list.length) { box.innerHTML = '<span class="none">None yet. Drag a class to pin it.</span>'; continue; }
+    list.forEach(([html, rm]) => {
+      const c = document.createElement("span"); c.className = "rchip"; c.innerHTML = html;
+      if (rm) {
+        const b = document.createElement("button"); b.type = "button"; b.textContent = "×"; b.setAttribute("aria-label", "Remove this rule");
+        b.onclick = () => { rm(); S.reqDone = S.requests; S.place = schedule(S); save(); renderPlan(); toast("Removed. Plan rebuilt."); };
+        c.append(b);
+      } else c.style.paddingRight = "10px";
+      box.append(c);
+    });
+  }
 }
 
-/* ---------- step 3: plan board ---------- */
+/* ---------- step 4: plan board ---------- */
 const NS = "http://www.w3.org/2000/svg", board = $("board"), svg = $("wires"), scroller = $("scroller");
 let T = [], G = { by: {}, edges: [] }, cards = {}, cols = [], sel = null;
 const kindClass = (c) => (c.status === "current" ? "nowc" : c.easy ? "easy" : c.kind);
@@ -390,7 +507,7 @@ function renderPlan() {
       el.className = "card " + kindClass(c) + (lock ? " locked" : "") + (pinned ? " pinned" : "");
       el.tabIndex = 0; el.dataset.code = code;
       el.setAttribute("aria-label", `${code} ${c.name}, ${term.t}${pinned ? ", pinned" : ""}`);
-      const tags = (c.hard ? '<span class="tag hard">Hard</span>' : "") + (c.easy ? '<span class="tag">Easy</span>' : "") + (c.offered !== "any" ? `<span class="tag">${c.offered === "fall" ? "Fall" : "Spring"} only</span>` : "");
+      const tags = (c.hard ? '<span class="tag hard">Hard</span>' : "") + (c.easy ? '<span class="tag">Easy</span>' : "") + (c.tag ? `<span class="tag label">${esc(c.tag)}</span>` : "") + (c.offered !== "any" ? `<span class="tag">${c.offered === "fall" ? "Fall" : "Spring"} only</span>` : "");
       const pre = G.edges.filter((e) => e[1] === code).map((e) => e[0] + (e[2] ? " (same term OK)" : ""));
       el.innerHTML = `<div class="code"><span>${esc(code)}</span><span class="hrs">${c.hours}</span></div><div class="name">${esc(c.name)}</div>${tags ? `<div class="tags">${tags}</div>` : ""}${pre.length ? `<span class="needs">Needs ${esc(pre.join(", "))}</span>` : ""}` +
         (lock ? "" : `<button class="pinbtn" type="button" data-pin="${esc(code)}" aria-pressed="${pinned}" aria-label="${pinned ? "Unpin " + esc(code) : "Pin " + esc(code) + " to " + esc(term.t)}" title="${pinned ? "Pinned here. Tap to let auto mode move it" : "Pin to this semester"}">${PIN_SVG}</button><span class="grip" title="Hold to drag">${GRIP_SVG}</span>`);
@@ -399,12 +516,23 @@ function renderPlan() {
     board.appendChild(col); cols.push(col);
   }
   $("reqTxt").value = S.requests || "";
-  renderRules(); renderBar();
+  renderRules(); renderBar(); renderProgress();
   requestAnimationFrame(draw);
 }
 function renderBar() {
   const { years } = totals(S, S.place), target = S.settings.yearTarget;
   $("bar").innerHTML = years.map((y) => `<div class="year ${y.final ? "fin" : y.met ? "good" : "short"}"><span class="lbl">${y.label}${y.final ? " · final" : ""}</span><span class="num">${y.hours} hrs</span><span class="st">${y.final ? "Final year" : y.met ? `${target} met` : `Short by ${y.short}`}</span></div>`).join("");
+}
+
+function renderProgress() {
+  const p = progress(S, S.place), t = Math.max(1, p.total);
+  const pct = (v) => `${Math.min(100, (v / t) * 100).toFixed(1)}%`;
+  const left = Math.max(0, p.total - p.done - p.current - p.planned);
+  $("gradbar").innerHTML = `<div class="top"><span><span class="big">${p.done} of ${p.total} hrs</span> done${p.fromChart ? " <span class=\"hint\">(total from your chart; set your degree's total in step 1)</span>" : ""}</span>
+    <span>${p.finish ? `Plan finishes <b>${esc(p.finish)}</b>` : `<b style="color:var(--bad)">${p.unplaced} hrs don't fit yet</b>`}</span></div>
+    <div class="track" role="img" aria-label="${p.done} hours done, ${p.current} in progress, ${p.planned} planned of ${p.total}">
+      <span style="width:${pct(p.done)};background:var(--ok)"></span><span style="width:${pct(p.current)};background:var(--now)"></span><span style="width:${pct(p.planned)};background:var(--core)"></span></div>
+    <div class="keys"><span><i style="background:var(--ok)"></i>Done ${p.done}</span><span><i style="background:var(--now)"></i>Taking now ${p.current}</span><span><i style="background:var(--core)"></i>Planned ${p.planned}</span>${left > 0 && !p.fromChart ? `<span><i style="background:var(--grid)"></i>Not on the chart ${left}</span>` : ""}</div>`;
 }
 
 /* prerequisite wires */
@@ -421,7 +549,7 @@ function roundPath(pts, r = 7) {
   return d + ` L${l[0]},${l[1]}`;
 }
 function draw() {
-  if ($("s3").hidden) return;
+  if ($("s4").hidden) return;
   const P = S.place, edges = G.edges.filter(([f, t]) => cards[f] && cards[t]);
   const span = (f, t) => P[t] - P[f];
   const longs = edges.filter((e) => span(e[0], e[1]) > 1).sort((x, y) => P[x[0]] - P[y[0]] || P[x[1]] - P[y[1]]);
@@ -609,18 +737,10 @@ $("importFile").onchange = async (e) => {
 };
 
 /* ---------- start ---------- */
-$("exportBtn").hidden = false;
-go(S.step || 3);
+go(S.step || 4);
 document.fonts?.ready.then(() => requestAnimationFrame(draw));
 connectAI().then((ai) => {
   AI = ai;
-  const note = $("aiNote"), drop = $("dropNote");
-  if (!AI) {
-    drop.textContent = "The AI reader isn't set up here. You can still type your classes.";
-    note.textContent = "AI reader: off. Typed requests are off too, but dragging and pinning work.";
-    $("readBtn").disabled = true;
-  } else {
-    drop.textContent = `A PDF, or PNG, JPG or WebP screenshots. Up to ${AI.maxImages} images or pages. You can also paste a screenshot.`;
-    note.textContent = AI.source === "claude.ai" ? "AI reader: on, using your Claude account." : `AI reader: on${AI.model ? ` (${AI.model})` : ""}.`;
-  }
+  $("asks").hidden = !AI;
+  $("rulesOnly").hidden = !!AI;
 });
