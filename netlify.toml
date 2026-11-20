@@ -1,0 +1,16 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+# pdf.js ships as .mjs modules; make sure browsers get them as JavaScript.
+[[headers]]
+  for = "/vendor/pdfjs/*.mjs"
+  [headers.values]
+    Content-Type = "text/javascript; charset=utf-8"
